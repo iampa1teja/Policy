@@ -1,5 +1,5 @@
 import torch.nn as nn 
-from .feature_extraction import Backbone, FPN, BiFPN, CBAM
+from ..feature_extraction import Backbone, FPN, BiFPN, CBAM
 
 import warnings
 
