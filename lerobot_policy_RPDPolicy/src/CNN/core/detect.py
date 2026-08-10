@@ -8,7 +8,7 @@ from ultralytics.utils.nms import non_max_suppression
 from ultralytics.utils.loss import v8DetectionLoss
 from ultralytics.engine.results import Results 
 
-class Detector: 
+class Detector(nn.Module): 
     def __init__(
         self,
         num_classes: int, 

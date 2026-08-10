@@ -50,11 +50,11 @@ class FeatureExtraction(nn.Module):
             self.attention = None
 
     @property 
-    def out_stries(self): 
-        return list(self.backbone.out_stried) 
+    def out_strides(self): 
+        return list(self.backbone.out_strides) 
 
     def num_output_levels(self): 
-        return len(self.out_stries) 
+        return len(self.out_strides) 
 
     def forward(self, x): 
         features = self.backbone(x) 

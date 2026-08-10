@@ -69,7 +69,7 @@ class CNN(nn.Module):
         self.detector = Detector(
             num_classes=num_classes,
             channels=channels,
-            strides=self.feature_extractor.out_stries,
+            strides=self.feature_extractor.out_strides,
             conf_threshold=conf_threshold,
             iou_threshold=iou_threshold,
             max_detections=max_detections,

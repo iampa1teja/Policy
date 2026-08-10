@@ -1,10 +1,10 @@
-from __future__ import annotations 
+from __future__ import annotations
 
-from types import SimpleNamespace 
+from types import SimpleNamespace
 
-from ultralytics.trackers.byte_tracker import BYTETracker 
-from ultralytics.trackers.bot_sort import BOTrack
-from ultralytics.engine.results import Boxes 
+from ultralytics.trackers.byte_tracker import BYTETracker
+from ultralytics.trackers.bot_sort import BOTSORT
+from ultralytics.engine.results import Boxes
 
 
 class Tracker:
@@ -16,7 +16,7 @@ class Tracker:
             "bytetrack": BYTETracker(
                 args=self._bytetrack_args()
             ),
-            "botsort": BOTrack(
+            "botsort": BOTSORT(
                 args=self._botsort_args()
             ),
         }
@@ -45,28 +45,34 @@ class Tracker:
             fuse_score=True,
             gmc_method="sparseOptFlow",
             proximity_thresh=0.5,
-            appearance_thresh=0.8,
-            with_reid=False,
+            appearance_thresh=0.25,
+            with_reid=True,
             model="auto",
         )
 
     def track(
-        self, 
-        detections, 
-        image_shape, 
-        tracker: str = "bytetrack", 
-        img = None, 
-    ): 
+        self,
+        detections,
+        image_shape,
+        tracker: str = "botsort",
+        img = None,
+    ):
         """
-        detections: Detection tensor produced by CNN.detect(). 
+        detections: Detection tensor produced by CNN.detect().
         """
-        tracker = tracker.lower() 
+        tracker = tracker.lower()
 
         if tracker not in self.trackers:
             raise ValueError(
                 f"Unknown tracker '{tracker}'. "
                 f"Available trackers: "
                 f"{list(self.trackers.keys())}"
+            )
+
+        if tracker == "botsort" and self.trackers[tracker].with_reid and img is None:
+            raise ValueError(
+                "botsort tracker has with_reid=True, which requires "
+                "the original image (img=...) for appearance embeddings."
             )
 
         results = Boxes(
@@ -81,14 +87,14 @@ class Tracker:
 
     def reset_tracker(
         self,
-        tracker: str | None = None, 
+        tracker: str | None = None,
     ):
-        if tracker is None: 
-            for tracking_algorithm in self.trackers.values(): 
-                tracking_algorithm.reset() 
-            return 
+        if tracker is None:
+            for tracking_algorithm in self.trackers.values():
+                tracking_algorithm.reset()
+            return
 
-        tracker = tracker.lower()  
+        tracker = tracker.lower()
 
         if tracker not in self.trackers:
             raise ValueError(
