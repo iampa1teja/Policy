@@ -33,7 +33,7 @@ class CNN(nn.Module):
         self.num_classes = num_classes
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
-        self.max_detection = max_detections
+        self.max_detections = max_detections
         self.image_size = image_size
 
         if class_names is None:
@@ -74,12 +74,6 @@ class CNN(nn.Module):
             iou_threshold=iou_threshold,
             max_detections=max_detections,
         )
-        self.detector.head.stride = self.detector.head_stride
-
-        self.detector.model = [
-            self.feature_extractor,
-            self.detector.head,
-        ]
 
         self.tracker = Tracker()
         self.criterion = None
@@ -135,7 +129,6 @@ class CNN(nn.Module):
 
     @torch.no_grad()
     def predict(self, source, conf_threshold: float | None = None, iou_threshold: float | None = None):
-        """Run inference on image."""
         return predict(self, source, conf_threshold, iou_threshold)
 
     @torch.no_grad()
@@ -173,10 +166,9 @@ class CNN(nn.Module):
             img=img,
         )
 
-    def reset_tracker(self, tracker: str | None = None,):
+    def reset_tracker(self, tracker: str | None = None):
         self.tracker.reset_tracker(tracker)
 
-    def fit(self, dataset, epochs: int = 100, lr: float = 1e-3, optimizer=None, 
+    def fit(self, dataset, epochs: int = 100, lr: float = 1e-3, optimizer=None,
             device=None, output_dir: str | Path = "./runs"):
-        """Train the model on the dataset."""
         return fit(self, dataset, epochs, lr, optimizer, device, output_dir)
