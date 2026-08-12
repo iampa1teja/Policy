@@ -171,3 +171,16 @@ class VisionTokenizer(nn.Module):
     @property
     def total_num_tokens(self) -> int:
         return sum(self.tokens_per_level)
+
+class TokenProjector(nn.Module):
+    def __init__(self, in_dim: int, out_dim: int, dropout: float = 0.0): 
+        super().__init__() 
+        self.model = nn.Sequential([
+            nn.LayerNorm(in_dim), 
+            nn.Linear(in_dim, out_dim), 
+            nn.GELU(), 
+            nn.Dropout(dropout) 
+        ])
+
+    def forward(self, tokens: torch.Tensor): 
+        return self.model(tokens)

@@ -37,29 +37,40 @@ class RPDPolicyConfig(PreTrainedConfig):
     tracker: TrackerType = TrackerType.BYTETRACK
 
     def __post_init__(self):
-        return super().__post_init__()
+        super().__post_init__()
         if self.n_action_steps > self.horizon: 
             raise ValueError("n_action_steps cannot exceed horizon") 
 
     def validate_features(self):
-        """
-        Validate input/output feature compatability. 
-        """
-        if not self.image_features: 
-            raise ValueError("RPDPOlicy requires at least one image feature")
+        if not self.image_features:
+            raise ValueError("RPDPolicy requires at least one image feature")
 
-        if self.action_feature is None: 
-            raise ValueError("RPDPolicy requreis 'action' in ouptut_features")
+        if self.action_feature is None:
+            raise ValueError("RPDPolicy requires 'action' in output_features")
 
-        if not self.model_checkpoint: 
-            raise ValueError("The CNN model needs to be trained to use the policy") 
-        else: 
-            try: 
-                ckpt = torch.load(self.model_checkpoint)
-                model = CNN() 
-                model = model.load_state_dict(ckpt["model_state_dict"])
-            except Exception as E: 
-                raise RuntimeError(f"UNable to load model weights exited with exception: {E}")
+        if self.model_checkpoint is None:
+            raise ValueError("The CNN model needs to be trained to use the policy")
+
+        try:
+            ckpt = torch.load(
+                self.model_checkpoint,
+                map_location="cpu",
+                weights_only=False,
+            )
+
+            required_keys = {
+                "feature_extractor_state_dict",
+                "detector_state_dict",
+                "model_config",
+            }
+
+            missing = required_keys - ckpt.keys()
+
+            if missing:
+                raise ValueError(f"Checkpoint missing keys: {missing}")
+
+        except Exception as e:
+            raise RuntimeError(f"Unable to load CNN checkpoint: {e}") from e
 
     def get_optimizer_preset(self):
         return AdamConfig(lr = self.optimizer_lr, weight_decay=self.optimizer_weight_decay) 

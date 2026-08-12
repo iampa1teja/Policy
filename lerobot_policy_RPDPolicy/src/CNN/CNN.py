@@ -77,6 +77,19 @@ class CNN(nn.Module):
 
         self.tracker = Tracker()
         self.criterion = None
+        self.model_config = {
+            "num_classes": num_classes,
+            "backbone_name": backbone_name,
+            "neck": neck,
+            "feature_channels": feature_channels,
+            "bifpn_layers": bifpn_layers,
+            "use_cbam": use_cbam,
+            "conf_threshold": conf_threshold,
+            "iou_threshold": iou_threshold,
+            "max_detections": max_detections,
+            "image_size": image_size,
+            "class_names": self.names,
+        }
 
     @property
     def model(self):

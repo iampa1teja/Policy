@@ -190,17 +190,14 @@ def save_checkpoint(
 
     checkpoint = {
         "model_state_dict": model.state_dict(), 
-        "feature_extractor_state_dict" : {
-            model.feature_extractor.state_dict()
-        },
-        "detect_state_dict": {
-            model.detect_head.state_dict() 
-        },
+        "feature_extractor_state_dict": model.feature_extractor.state_dict(),
+        "detector_state_dict": model.detector.state_dict(),
         "optimizer_state_dict" : (
             optimizer.state_dict() 
             if optimizer is not None 
             else None 
         ), 
+        "model_config": model.model_config,
 
         "epoch" : epoch, 
         "loss" : avg_loss, 
