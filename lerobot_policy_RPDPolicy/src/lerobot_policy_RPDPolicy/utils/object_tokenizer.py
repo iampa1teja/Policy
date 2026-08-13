@@ -84,7 +84,6 @@ class TrackTokenizer(nn.Module):
             else None
         )
 
-        # Realtime streaming state only.
         self._history: dict[int, list[tuple[float, float, float, float, int]]] = {}
         self._frame_counter = 0
 

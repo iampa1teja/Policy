@@ -13,6 +13,13 @@ class TrackerType(Enum):
     BYTETRACK = "bytetrack"
     BOTSORT = "botsort"
 
+class ActionNormalizationMode(str, Enum):
+    IDENTITY = "identity"
+    MEAN_STD = "mean_std"
+    MIN_MAX = "min_max"
+    QUANTILES = "quantiles"
+    QUANTILE10 = "quantile10"
+
 @PreTrainedConfig.register_subclass("RPDPolicy") 
 @dataclass 
 class RPDPolicyConfig(PreTrainedConfig): 
@@ -35,6 +42,8 @@ class RPDPolicyConfig(PreTrainedConfig):
 
     model_checkpoint: Path | None = None
     tracker: TrackerType = TrackerType.BYTETRACK
+
+    action_normalization: ActionNormalizationMode = (ActionNormalizationMode.IDENTITY)
 
     def __post_init__(self):
         super().__post_init__()
