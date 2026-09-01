@@ -1,37 +1,136 @@
-import torch 
-import torch.nn as nn 
-from typing import Any 
+from __future__ import annotations
 
-from lerobot.policies import PreTrainedPolicy 
-from lerobot.utils.constants import ACTION 
-from.configuration_RPDPolicy import RPDPolicyConfig
+import math
+from collections import deque
+from typing import Any
+
+import torch
+import torch.nn as nn
+
+from lerobot.policies.pretrained import PreTrainedPolicy
+from lerobot.utils.constants import ACTION, OBS_STATE
+
+from .configuration_RPDPolicy import RPDPolicyConfig
 
 from ..CNN.core.features import FeatureExtraction
-from ..CNN.core.detect import Detector 
+from ..CNN.core.detect import Detector
 from ..CNN.core.track import Tracker
 
-from .utils.vision_tokenizer import VisionTokenizer
+from .utils.vision_tokenizer import VisionTokenizer, TokenProjector
 from .utils.object_tokenizer import TrackTokenizer
+from .utils.pi_gemma import PiGemmaModel
+from .utils.flow_matching import ConditionalFlowMatching
 
-class RPDPolicy(PreTrainedPolicy):
-    config_class = RPDPolicyConfig 
-    name = "RPDPolicy" 
 
-    def __init__(self, config: RPDPolicyConfig, dataset_stats: dict[str, Any] = None): 
-        super().__init__(config, dataset_stats) 
-        config.validate_features() 
-        self.config = config 
-
-        cktp = torch.load(config.model_checkpoint) 
-
-        extractor = FeatureExtraction()
-        tokenizer = VisionTokenizer(
-            tokens_per_level=[16, 8, 4],
-            embed_dim=256,
-            pos_embedding_mode="sine",
+class SinusoidalTimeEmbedding(nn.Module):
+    def __init__(self, dim: int, cond_dim: int):
+        super().__init__()
+        if dim % 2 != 0:
+            raise ValueError(f"SinusoidalTimeEmbedding dim must be even, got {dim}.")
+        self.dim = dim
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, cond_dim),
+            nn.GELU(),
+            nn.Linear(cond_dim, cond_dim),
         )
 
-        model_config = cktp["model_config"]
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """t: [B] float in [0, 1] -> [B, cond_dim]."""
+        half = self.dim // 2
+        freqs = torch.exp(
+            -math.log(10000.0)
+            * torch.arange(half, device=t.device, dtype=torch.float32)
+            / half
+        )
+        args = t.float().unsqueeze(1) * freqs.unsqueeze(0)
+        sinusoid = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        return self.mlp(sinusoid.to(t.dtype if t.is_floating_point() else torch.float32))
+
+
+class ActionExpert(nn.Module):
+
+    def __init__(
+        self,
+        config: RPDPolicyConfig,
+        action_dim: int,
+        condition_dim: int,
+    ):
+        super().__init__()
+        gemma_config = config.make_action_expert_config()
+        self.decoder = PiGemmaModel(gemma_config)
+        self.hidden_size = config.action_expert_hidden_size
+        self.condition_proj = (
+            nn.Linear(condition_dim, self.hidden_size)
+            if condition_dim != self.hidden_size
+            else nn.Identity()
+        )
+
+        self.state_encoder = nn.Linear(config.state_dim, self.hidden_size)
+        self.action_encoder = nn.Linear(action_dim, self.hidden_size)
+        self.time_embedding = SinusoidalTimeEmbedding(
+            dim=self.hidden_size, cond_dim=config.adarms_cond_dim
+        )
+        self.velocity_head = nn.Linear(self.hidden_size, action_dim)
+
+    def forward(
+        self,
+        noisy_actions: torch.Tensor,
+        state: torch.Tensor,
+        t: torch.Tensor,
+        prefix_embeds: torch.Tensor,
+        prefix_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Args:
+            noisy_actions: [B, horizon, action_dim]
+            state: [B, state_dim]
+            t: [B]
+            prefix_embeds: [B, L, condition_dim] -- ConditionGate's already
+                weighted, concatenated multi-condition prefix.
+            prefix_mask: [B, L] bool -- ConditionGate's combined validity mask.
+
+        Returns:
+            velocity: [B, horizon, action_dim]
+        """
+        horizon = noisy_actions.shape[1]
+
+        prefix = self.condition_proj(prefix_embeds)
+        state_embed = self.state_encoder(state).unsqueeze(1)
+        action_embeds = self.action_encoder(noisy_actions)
+        adarms_cond = self.time_embedding(t)
+
+        inputs_embeds = torch.cat([prefix, state_embed, action_embeds], dim=1)
+
+        suffix_mask = torch.ones(
+            inputs_embeds.shape[0],
+            1 + horizon,
+            dtype=torch.bool,
+            device=inputs_embeds.device,
+        )
+        attention_mask = torch.cat([prefix_mask.bool(), suffix_mask], dim=1)
+
+        outputs = self.decoder(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            adarms_cond=adarms_cond,
+        )
+
+        action_hidden = outputs.last_hidden_state[:, -horizon:, :]
+        return self.velocity_head(action_hidden)
+
+
+class RPDPolicy(PreTrainedPolicy):
+    config_class = RPDPolicyConfig
+    name = "RPDPolicy"
+
+    def __init__(self, config: RPDPolicyConfig, dataset_stats: dict[str, Any] = None):
+        super().__init__(config, dataset_stats)
+        config.validate_features()
+        self.config = config
+
+        ckpt = torch.load(config.model_checkpoint, map_location="cpu", weights_only=False)
+        model_config = ckpt["model_config"]
+
         feature_extractor = FeatureExtraction(
             backbone_name=model_config["backbone_name"],
             pretrained=False,
@@ -40,11 +139,7 @@ class RPDPolicy(PreTrainedPolicy):
             bifpn_layers=model_config["bifpn_layers"],
             use_cbam=model_config["use_cbam"],
         )
-
-        feature_extractor.load_state_dict(
-            cktp["feature_extractor_state_dict"]
-        )
-
+        feature_extractor.load_state_dict(ckpt["feature_extractor_state_dict"])
         self.feature_extractor = feature_extractor
 
         num_levels = feature_extractor.num_output_levels()
@@ -58,16 +153,147 @@ class RPDPolicy(PreTrainedPolicy):
             iou_threshold=model_config["iou_threshold"],
             max_detections=model_config["max_detections"],
         )
-
-        detector.load_state_dict(
-            cktp["detector_state_dict"]
-        )
-
+        detector.load_state_dict(ckpt["detector_state_dict"])
         self.detector = detector
 
         self.tracker = Tracker()
 
         self.track_tokenizer = TrackTokenizer(
-            embed_dim = config.hidden_dim, 
-            max_history_len=30, 
+            embed_dim=config.track_embed_dim,
+            max_history_len=config.max_history_len,
         )
+        self.track_projector = TokenProjector(
+            in_dim=config.track_embed_dim,
+            out_dim=config.hidden_dim,
+        )
+
+        self.vision_tokenizer = VisionTokenizer(
+            tokens_per_level=config.vision_tokens_per_level,
+            embed_dim=config.vision_embed_dim,
+            pos_embedding_mode="sine",
+        )
+        self.vision_projector = TokenProjector(
+            in_dim=config.vision_embed_dim,
+            out_dim=config.hidden_dim,
+        )
+
+        action_dim = config.action_feature.shape[0]
+
+        self.action_expert = ActionExpert(
+            config,
+            action_dim=action_dim,
+            condition_dim=config.hidden_dim,
+        )
+
+        self.flow_matching = ConditionalFlowMatching(
+            action_expert=self.action_expert,
+            hidden_size=config.hidden_dim,
+            num_inference_steps=config.num_inference_steps,
+            min_t=config.min_t,
+            max_t=config.max_t,
+        )
+
+        self._action_queue: deque[torch.Tensor] = deque(maxlen=config.n_action_steps)
+
+
+    def _image_condition(self, images: torch.Tensor) -> torch.Tensor:
+        features = self.feature_extractor(images)
+        vision_tokens = self.vision_tokenizer(features)
+        return self.vision_projector(vision_tokens)
+
+    def _track_condition_offline(
+        self,
+        boxes: torch.Tensor,
+        frame_ids: torch.Tensor,
+        history_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        track_tokens = self.track_tokenizer.forward_history_batch(
+            boxes, frame_ids, history_mask
+        )
+        return self.track_projector(track_tokens)
+
+    def _track_condition_realtime(self, tracks: Any) -> torch.Tensor:
+        tokens = self.track_tokenizer(tracks)
+        device = next(self.track_projector.parameters()).device
+
+        if not tokens:
+            return torch.zeros(1, 0, self.config.hidden_dim, device=device)
+
+        stacked = torch.stack(
+            [tokens[tid] for tid in sorted(tokens)], dim=0
+        ).unsqueeze(0).to(device)
+        return self.track_projector(stacked)
+
+    def get_optim_params(self) -> dict:
+        return self.parameters()
+
+    def reset(self):
+        self._action_queue = deque(maxlen=self.config.n_action_steps)
+        self.track_tokenizer.reset()
+        self.tracker.reset_tracker(self.config.tracker.value)
+
+    def forward(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict | None]:
+        image_key = next(iter(self.config.image_features))
+        images = batch[image_key]
+        state = batch[OBS_STATE]
+        actions = batch[ACTION]
+
+        image_condition = self._image_condition(images)
+        track_condition = self._track_condition_offline(
+            batch["track_boxes"], batch["track_frame_ids"], batch["track_history_mask"]
+        )
+
+        weights = self.config.condition_weights
+        conditions = {
+            "image": (weights["image"], image_condition),
+            "track": (weights["track"], track_condition),
+        }
+
+        loss = self.flow_matching(
+            a1=actions,
+            state=state,
+            conditions=conditions,
+        )
+
+        return loss, {"loss": loss.item() if torch.is_tensor(loss) else loss}
+
+    @torch.no_grad()
+    def predict_action_chunk(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
+        self.eval()
+
+        image_key = next(iter(self.config.image_features))
+        images = batch[image_key]
+        state = batch[OBS_STATE]
+
+        image_condition = self._image_condition(images)
+        track_condition = self._track_condition_realtime(batch["tracks"])
+
+        weights = self.config.condition_weights
+        conditions = {
+            "image": (weights["image"], image_condition),
+            "track": (weights["track"], track_condition),
+        }
+
+        action_dim = self.config.action_feature.shape[0]
+
+        actions = self.flow_matching(
+            a1=None,
+            state=state,
+            conditions=conditions,
+            horizon=self.config.horizon,
+            action_dim=action_dim,
+        )
+        return actions
+
+    @torch.no_grad()
+    def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
+        self.eval()
+
+        if len(self._action_queue) == 0:
+            actions = self.predict_action_chunk(batch)[:, : self.config.n_action_steps]
+            self._action_queue.extend(actions.transpose(0, 1))
+
+        return self._action_queue.popleft()
+
+
+__all__ = ["RPDPolicy", "ActionExpert", "SinusoidalTimeEmbedding"]
