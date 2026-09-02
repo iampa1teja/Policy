@@ -112,6 +112,8 @@ class ScaleEmbedding(nn.Module):
 class VisionTokenizer(nn.Module):
     def __init__(
         self,
+        in_channels: int, 
+        num_levels: int,  
         tokens_per_level: List[int],
         embed_dim: int = 256,
         pos_embedding_mode: str = "sine",
@@ -120,23 +122,17 @@ class VisionTokenizer(nn.Module):
     ):
         super().__init__()
         self.tokens_per_level = tokens_per_level
-        self.embed_dim = embed_dim
         self.pos_embedding_mode = pos_embedding_mode
         self.use_positional_encoding = use_positional_encoding
         self.use_scale_embedding = use_scale_embedding
-        self._built = False
 
-    def _build(self, features: List[torch.Tensor]):
-        num_levels = len(features)
-        assert num_levels == len(self.tokens_per_level), (
-            f"tokens_per_level has {len(self.tokens_per_level)} entries but got {num_levels} feature maps"
-        )
-        in_channels = features[0].shape[1]
+        if len(tokens_per_level) != num_levels:
+            raise ValueError("MIsmatch in number of levels and the given configuration of tokens for each level.")
 
-        if self.use_positional_encoding:
+        if use_positional_encoding: 
             self.pos_encodings = nn.ModuleList([
-                PositionEmbedding2D(num_pos_feats=in_channels // 2, mode=self.pos_embedding_mode)
-                for _ in range(num_levels)
+                PositionEmbedding2D(num_pos_feats=in_channels // 2, mode = self.pos_embedding_mode)
+                for _ in range(num_levels) 
             ])
 
         self.token_learners = nn.ModuleList([
@@ -144,12 +140,11 @@ class VisionTokenizer(nn.Module):
             for i in range(num_levels)
         ])
 
-        self.proj = nn.Linear(in_channels, self.embed_dim) if self.embed_dim != in_channels else None
+        self.proj = nn.Linear(in_channels, embed_dim) if embed_dim != in_channels else None
 
-        if self.use_scale_embedding:
-            self.scale_embedding = ScaleEmbedding(num_levels, self.embed_dim)
+        if use_scale_embedding: 
+            self.scale_embedding = ScaleEmbedding(num_levels, embed_dim) 
 
-        self._built = True
 
     def _tokenize_level(self, feature_map: torch.Tensor, level_idx: int) -> torch.Tensor:
         x = feature_map
@@ -163,8 +158,6 @@ class VisionTokenizer(nn.Module):
         return tokens
 
     def forward(self, features: List[torch.Tensor]) -> torch.Tensor:
-        if not self._built:
-            self._build(features)
         level_tokens = [self._tokenize_level(f, i) for i, f in enumerate(features)]
         return torch.cat(level_tokens, dim=1)
 
@@ -175,12 +168,12 @@ class VisionTokenizer(nn.Module):
 class TokenProjector(nn.Module):
     def __init__(self, in_dim: int, out_dim: int, dropout: float = 0.0): 
         super().__init__() 
-        self.model = nn.Sequential([
+        self.model = nn.Sequential(
             nn.LayerNorm(in_dim), 
             nn.Linear(in_dim, out_dim), 
             nn.GELU(), 
             nn.Dropout(dropout) 
-        ])
+        )
 
     def forward(self, tokens: torch.Tensor): 
         return self.model(tokens)
