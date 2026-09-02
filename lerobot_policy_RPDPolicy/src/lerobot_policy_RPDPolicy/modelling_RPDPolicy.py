@@ -81,17 +81,38 @@ class ActionExpert(nn.Module):
         prefix_mask: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Args:
-            noisy_actions: [B, horizon, action_dim]
-            state: [B, state_dim]
-            t: [B]
-            prefix_embeds: [B, L, condition_dim] -- ConditionGate's already
-                weighted, concatenated multi-condition prefix.
-            prefix_mask: [B, L] bool -- ConditionGate's combined validity mask.
+            Forward pass of the action expert.
+            The input sequence is constructed as:
+                [prefix tokens] [state token] [action tokens]
 
-        Returns:
-            velocity: [B, horizon, action_dim]
+            Attention uses a blocked prefix/action mask rather than causal
+            autoregressive attention:
+
+                conditioning → conditioning : allowed
+                conditioning → actions      : blocked
+                actions      → conditioning : allowed
+                actions      → actions       : allowed
+
+            This allows the entire action chunk to attend bidirectionally while
+            remaining conditioned on the prefix and state.
+            Args:
+                noisy_actions: [B, horizon, action_dim]
+                    Noisy action chunk used as the input to the flow-matching
+                    action expert.
+                state: [B, state_dim]
+                    Robot state used as an additional conditioning token.
+                t: [B]
+                    Flow-matching time values.
+                prefix_embeds: [B, prefix_len, condition_dim]
+                    Concatenated vision/track conditioning embeddings produced by
+                    the condition pipeline.
+                prefix_mask: [B, prefix_len] bool
+                    Validity mask for the prefix conditioning tokens.
+            Returns:
+                velocity: [B, horizon, action_dim]
+                    Predicted action velocity for every action in the chunk.
         """
+
         horizon = noisy_actions.shape[1]
 
         prefix = self.condition_proj(prefix_embeds)
@@ -100,14 +121,15 @@ class ActionExpert(nn.Module):
         adarms_cond = self.time_embedding(t)
 
         inputs_embeds = torch.cat([prefix, state_embed, action_embeds], dim=1)
+        L = inputs_embeds.shape[1]
 
-        suffix_mask = torch.ones(
-            inputs_embeds.shape[0],
-            1 + horizon,
-            dtype=torch.bool,
-            device=inputs_embeds.device,
+        attention_mask = torch.ones((L, L), dtype=bool, device=inputs_embeds.device)
+        cond_len = prefix_embeds.shape[1] + state_embed.shape[1] 
+        attention_mask[:cond_len, cond_len:] = False
+        attention_mask = attention_mask.unsqueeze(0).unsqueeze(0)
+        attention_mask = attention_mask.expand(
+            inputs_embeds.shape[0], -1, -1, -1
         )
-        attention_mask = torch.cat([prefix_mask.bool(), suffix_mask], dim=1)
 
         outputs = self.decoder(
             inputs_embeds=inputs_embeds,
@@ -115,7 +137,7 @@ class ActionExpert(nn.Module):
             adarms_cond=adarms_cond,
         )
 
-        action_hidden = outputs.last_hidden_state[:, -horizon:, :]
+        action_hidden = outputs.last_hidden_state[:, horizon:, :]
         return self.velocity_head(action_hidden)
 
 

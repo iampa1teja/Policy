@@ -247,7 +247,7 @@ class PiGemmaModel(GemmaModel):  # type: ignore[misc]
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask = create_causal_mask(
+        causal_mask = attention_mask if attention_mask.ndim == 4 else create_causal_mask(
             config=self.config,
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
