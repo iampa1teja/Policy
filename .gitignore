@@ -1,5 +1,5 @@
 .vscode
 ./lerobot_policy_RPDPolicy/src/lerobot_policy_RPDPolicy/test.py
 ./CLAUDE.md
-./gitignore 
+./.gitignore 
 ./lerobot_policy_RPDPolicy/.vscode
