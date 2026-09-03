@@ -190,6 +190,8 @@ class RPDPolicy(PreTrainedPolicy):
         )
 
         self.vision_tokenizer = VisionTokenizer(
+            in_channels=channels[0],
+            num_levels=num_levels,
             tokens_per_level=config.vision_tokens_per_level,
             embed_dim=config.vision_embed_dim,
             pos_embedding_mode="sine",
