@@ -51,7 +51,7 @@ def _episode_to_history(
             f"[frame_id,x1,y1,x2,y2,track_id,score,cls,idx]; got {rows.shape}."
         )
 
-    track_ids = sorted({int(v) for v in rows[: _TRACK_ID_COL_OFFLINE]})[-max_tracks:]
+    track_ids = sorted({int(v) for v in rows[:, _TRACK_ID_COL_OFFLINE]})[-max_tracks:]
 
     for slot, track_id in enumerate(track_ids):
         track_rows = rows[rows[:, _TRACK_ID_COL_OFFLINE].astype(np.int64) == track_id]

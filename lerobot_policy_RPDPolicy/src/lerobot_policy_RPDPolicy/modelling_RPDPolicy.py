@@ -228,23 +228,31 @@ class RPDPolicy(PreTrainedPolicy):
         boxes: torch.Tensor,
         frame_ids: torch.Tensor,
         history_mask: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         track_tokens = self.track_tokenizer.forward_history_batch(
             boxes, frame_ids, history_mask
         )
-        return self.track_projector(track_tokens)
+        return self.track_projector(track_tokens), history_mask.any(dim=-1)
 
-    def _track_condition_realtime(self, tracks: Any) -> torch.Tensor:
+    def _track_condition_realtime(
+        self, tracks: Any
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         tokens = self.track_tokenizer(tracks)
         device = next(self.track_projector.parameters()).device
+        padded = torch.zeros(
+            self.config.max_tracks,
+            self.config.track_embed_dim,
+            device=device,
+        )
+        valid = torch.zeros(
+            self.config.max_tracks, dtype=torch.bool, device=device
+        )
 
-        if not tokens:
-            return torch.zeros(1, 0, self.config.hidden_dim, device=device)
+        for slot, track_id in enumerate(sorted(tokens)[: self.config.max_tracks]):
+            padded[slot] = tokens[track_id].to(device)
+            valid[slot] = True
 
-        stacked = torch.stack(
-            [tokens[tid] for tid in sorted(tokens)], dim=0
-        ).unsqueeze(0).to(device)
-        return self.track_projector(stacked)
+        return self.track_projector(padded.unsqueeze(0)), valid.unsqueeze(0)
 
     def get_optim_params(self) -> dict:
         return self.parameters()
@@ -261,7 +269,7 @@ class RPDPolicy(PreTrainedPolicy):
         actions = batch[ACTION]
 
         image_condition = self._image_condition(images)
-        track_condition = self._track_condition_offline(
+        track_condition, track_valid_mask = self._track_condition_offline(
             batch["track_boxes"], batch["track_frame_ids"], batch["track_history_mask"]
         )
 
@@ -275,6 +283,7 @@ class RPDPolicy(PreTrainedPolicy):
             a1=actions,
             state=state,
             conditions=conditions,
+            masks={"track": track_valid_mask},
         )
 
         return loss, {"loss": loss.item() if torch.is_tensor(loss) else loss}
@@ -288,7 +297,7 @@ class RPDPolicy(PreTrainedPolicy):
         state = batch[OBS_STATE]
 
         image_condition = self._image_condition(images)
-        track_condition = self._track_condition_realtime(batch["tracks"])
+        track_condition, track_valid_mask = self._track_condition_realtime(batch["tracks"])
 
         weights = self.config.condition_weights
         conditions = {
@@ -304,6 +313,7 @@ class RPDPolicy(PreTrainedPolicy):
             conditions=conditions,
             horizon=self.config.horizon,
             action_dim=action_dim,
+            masks={"track": track_valid_mask},
         )
         return actions
 
