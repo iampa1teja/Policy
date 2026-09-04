@@ -13,8 +13,6 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 from .configuration_RPDPolicy import RPDPolicyConfig
 
 from ..CNN.core.features import FeatureExtraction
-from ..CNN.core.detect import Detector
-from ..CNN.core.track import Tracker
 
 from .utils.vision_tokenizer import VisionTokenizer, TokenProjector
 from .utils.object_tokenizer import TrackTokenizer
@@ -121,15 +119,22 @@ class ActionExpert(nn.Module):
         adarms_cond = self.time_embedding(t)
 
         inputs_embeds = torch.cat([prefix, state_embed, action_embeds], dim=1)
+        B = inputs_embeds.shape[0]
         L = inputs_embeds.shape[1]
+        prefix_len = prefix_embeds.shape[1]
+        cond_len = prefix_len + state_embed.shape[1]
 
-        attention_mask = torch.ones((L, L), dtype=bool, device=inputs_embeds.device)
-        cond_len = prefix_embeds.shape[1] + state_embed.shape[1] 
+        # Blocked (non-causal) mask: prefix+state cannot attend to the action
+        # chunk; everything else is bidirectional.
+        attention_mask = torch.ones((L, L), dtype=torch.bool, device=inputs_embeds.device)
         attention_mask[:cond_len, cond_len:] = False
-        attention_mask = attention_mask.unsqueeze(0).unsqueeze(0)
-        attention_mask = attention_mask.expand(
-            inputs_embeds.shape[0], -1, -1, -1
-        )
+        attention_mask = attention_mask.unsqueeze(0).unsqueeze(0).expand(B, 1, L, L).clone()
+
+        # Fold in the prefix padding mask so padded track slots are never
+        # attended to. State + action columns are always valid.
+        key_valid = torch.ones((B, L), dtype=torch.bool, device=inputs_embeds.device)
+        key_valid[:, :prefix_len] = prefix_mask.bool()
+        attention_mask &= key_valid[:, None, None, :]
 
         outputs = self.decoder(
             inputs_embeds=inputs_embeds,
@@ -137,7 +142,7 @@ class ActionExpert(nn.Module):
             adarms_cond=adarms_cond,
         )
 
-        action_hidden = outputs.last_hidden_state[:, horizon:, :]
+        action_hidden = outputs.last_hidden_state[:, -horizon:, :]
         return self.velocity_head(action_hidden)
 
 
@@ -166,19 +171,11 @@ class RPDPolicy(PreTrainedPolicy):
 
         num_levels = feature_extractor.num_output_levels()
         channels = (model_config["feature_channels"],) * num_levels
-
-        detector = Detector(
-            num_classes=model_config["num_classes"],
-            channels=channels,
-            strides=feature_extractor.out_strides,
-            conf_threshold=model_config["conf_threshold"],
-            iou_threshold=model_config["iou_threshold"],
-            max_detections=model_config["max_detections"],
-        )
-        detector.load_state_dict(ckpt["detector_state_dict"])
-        self.detector = detector
-
-        self.tracker = Tracker()
+        
+        if config.freeze_perception:
+            self.feature_extractor.eval()
+            for param in self.feature_extractor.parameters():
+                param.requires_grad_(False)
 
         self.track_tokenizer = TrackTokenizer(
             embed_dim=config.track_embed_dim,
@@ -219,9 +216,18 @@ class RPDPolicy(PreTrainedPolicy):
 
         self._action_queue: deque[torch.Tensor] = deque(maxlen=config.n_action_steps)
 
+        # Persistent realtime track-id -> slot map (stable RoPE positions).
+        self._id_to_slot: dict[int, int] = {}
+        self._free_slots: list[int] = list(range(config.max_tracks))
+
 
     def _image_condition(self, images: torch.Tensor) -> torch.Tensor:
-        features = self.feature_extractor(images)
+        if self.config.freeze_perception:
+            with torch.no_grad():
+                features = self.feature_extractor(images)
+            features = [f.detach() for f in features]
+        else:
+            features = self.feature_extractor(images)
         vision_tokens = self.vision_tokenizer(features)
         return self.vision_projector(vision_tokens)
 
@@ -235,6 +241,19 @@ class RPDPolicy(PreTrainedPolicy):
             boxes, frame_ids, history_mask
         )
         return self.track_projector(track_tokens), history_mask.any(dim=-1)
+
+    def _assign_slot(self, track_id: int) -> int | None:
+        """Stable first-appearance slot assignment. A track keeps its slot for
+        the whole rollout so the RoPE position of a given object is consistent
+        across frames. Returns None once all slots are taken."""
+        if track_id in self._id_to_slot:
+            return self._id_to_slot[track_id]
+        if not self._free_slots:
+            return None
+        slot = min(self._free_slots)
+        self._free_slots.remove(slot)
+        self._id_to_slot[track_id] = slot
+        return slot
 
     def _track_condition_realtime(
         self, tracks: Any
@@ -250,42 +269,50 @@ class RPDPolicy(PreTrainedPolicy):
             self.config.max_tracks, dtype=torch.bool, device=device
         )
 
-        for slot, track_id in enumerate(sorted(tokens)[: self.config.max_tracks]):
+        # Sort by id for deterministic assignment order; slots themselves are
+        # persistent (first-appearance), matching the offline first-seen policy.
+        for track_id in sorted(tokens):
+            slot = self._assign_slot(int(track_id))
+            if slot is None:
+                continue
             padded[slot] = tokens[track_id].to(device)
             valid[slot] = True
 
         return self.track_projector(padded.unsqueeze(0)), valid.unsqueeze(0)
 
     def get_optim_params(self) -> dict:
-        return self.parameters()
+        return [p for p in self.parameters() if p.requires_grad]
 
     def reset(self):
         self._action_queue = deque(maxlen=self.config.n_action_steps)
         self.track_tokenizer.reset()
-        self.tracker.reset_tracker(self.config.tracker.value)
+        self._id_to_slot.clear()
+        self._free_slots = list(range(self.config.max_tracks))
 
-    def forward(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict | None]:
+    def forward(self, batch: dict[str, torch.Tensor], **kwargs) -> tuple[torch.Tensor, dict | None]:
         image_key = next(iter(self.config.image_features))
         images = batch[image_key]
         state = batch[OBS_STATE]
         actions = batch[ACTION]
 
-        image_condition = self._image_condition(images)
-        track_condition, track_valid_mask = self._track_condition_offline(
-            batch["track_boxes"], batch["track_frame_ids"], batch["track_history_mask"]
-        )
+        conditions: dict[str, tuple[float, torch.Tensor]] = {}
+        masks: dict[str, torch.Tensor] = {}
 
-        weights = self.config.condition_weights
-        conditions = {
-            "image": (weights["image"], image_condition),
-            "track": (weights["track"], track_condition),
-        }
+        if self.config.use_vision_tokens:
+            conditions["image"] = (self.config.condition_weights["image"], self._image_condition(images))
+
+        if self.config.use_track_tokens:
+            track_condition, track_valid_mask = self._track_condition_offline(
+                batch["track_boxes"], batch["track_frame_ids"], batch["track_history_mask"]
+            )
+            conditions["track"] = (self.config.condition_weights["track"], track_condition)
+            masks["track"] = track_valid_mask
 
         loss = self.flow_matching(
             a1=actions,
             state=state,
             conditions=conditions,
-            masks={"track": track_valid_mask},
+            masks=masks,
         )
 
         return loss, {"loss": loss.item() if torch.is_tensor(loss) else loss}
@@ -298,14 +325,16 @@ class RPDPolicy(PreTrainedPolicy):
         images = batch[image_key]
         state = batch[OBS_STATE]
 
-        image_condition = self._image_condition(images)
-        track_condition, track_valid_mask = self._track_condition_realtime(batch["tracks"])
+        conditions: dict[str, tuple[float, torch.Tensor]] = {}
+        masks: dict[str, torch.Tensor] = {}
 
-        weights = self.config.condition_weights
-        conditions = {
-            "image": (weights["image"], image_condition),
-            "track": (weights["track"], track_condition),
-        }
+        if self.config.use_vision_tokens:
+            conditions["image"] = (self.config.condition_weights["image"], self._image_condition(images))
+
+        if self.config.use_track_tokens:
+            track_condition, track_valid_mask = self._track_condition_realtime(batch["tracks"])
+            conditions["track"] = (self.config.condition_weights["track"], track_condition)
+            masks["track"] = track_valid_mask
 
         action_dim = self.config.action_feature.shape[0]
 
@@ -315,7 +344,7 @@ class RPDPolicy(PreTrainedPolicy):
             conditions=conditions,
             horizon=self.config.horizon,
             action_dim=action_dim,
-            masks={"track": track_valid_mask},
+            masks=masks,
         )
         return actions
 
