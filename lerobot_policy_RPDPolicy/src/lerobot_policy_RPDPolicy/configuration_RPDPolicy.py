@@ -3,11 +3,13 @@ from pathlib import Path
 from enum import Enum
 
 import torch 
-from ..CNN import CNN 
+from ..CNN import CNN
+from transformers import GemmaConfig
 
 from lerobot.configs import PreTrainedConfig 
 from lerobot.optim import AdamConfig 
 from lerobot.optim import CosineDecayWithWarmupSchedulerConfig
+from lerobot.configs.types import NormalizationMode, FeatureType
 
 class TrackerType(Enum): 
     BYTETRACK = "bytetrack"
@@ -44,6 +46,41 @@ class RPDPolicyConfig(PreTrainedConfig):
     tracker: TrackerType = TrackerType.BYTETRACK
 
     action_normalization: ActionNormalizationMode = (ActionNormalizationMode.IDENTITY)
+
+    vision_embed_dim: int = 256
+    track_embed_dim: int = 256
+    vision_tokens_per_level: list[int] = field(default_factory=lambda: [16, 16, 16])
+    adarms_cond_dim: int = 256
+    action_expert_hidden_size: int = 256
+
+    action_expert_num_layers: int = 6
+    action_expert_num_heads: int = 8
+    action_expert_intermediate_size: int = 1024
+
+    num_inference_steps: int = 10
+    min_t: float = 0.0
+    max_t: float = 1.0
+
+    max_tracks: int = 16
+    max_history_len: int = 30
+
+    tokenizer_max_length: int = 48
+
+    use_vision_tokens: bool = True
+    use_track_tokens: bool = True
+    freeze_perception: bool = True
+    condition_weights: dict = field(
+        default_factory=lambda: {"image": 1.0, "track": 1.0} 
+    )
+
+    normalization_mapping: dict[str, NormalizationMode] = field(
+        default_factory= lambda: {
+            "VISUAL" : NormalizationMode.IDENTITY,
+            "STATE" : NormalizationMode.MEAN_STD,
+            "ACTION" : NormalizationMode.MEAN_STD,
+        }
+    )
+
 
     def __post_init__(self):
         super().__post_init__()
@@ -87,6 +124,23 @@ class RPDPolicyConfig(PreTrainedConfig):
     def get_scheduler_preset(self):
         return None 
 
+    def make_action_expert_config(self):
+        cfg = GemmaConfig(
+            vocab_size=1,
+            hidden_size=self.action_expert_hidden_size,
+            intermediate_size = self.action_expert_intermediate_size,
+            num_hidden_layers=self.action_expert_num_layers,
+            num_attention_heads=self.action_expert_num_heads,
+            num_key_value_heads=self.action_expert_num_heads,
+            head_dim=self.action_expert_hidden_size // self.action_expert_num_heads,
+            max_position_embeddings=512,
+            attn_implementation="sdpa"
+        )
+        cfg.use_adarms = True 
+        cfg.adarms_cond_dim = self.adarms_cond_dim
+        return cfg
+        
+
     @property 
     def observation_delta_indices(self) -> list[int] | None: 
         """
@@ -107,6 +161,10 @@ class RPDPolicyConfig(PreTrainedConfig):
     def reward_delta_indices(self) -> None: 
         return None 
 
+    @property
+    def state_dim(self) -> int:
+        return self.robot_state_feature.shape[0]
+    
 
 
         
