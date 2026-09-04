@@ -216,8 +216,8 @@ def save_checkpoint(
     )
 
     torch.save(
-        checkpoint, 
-        checkpoint_dir / f"epoch: {epoch}.pt"
+        checkpoint,
+        checkpoint_dir / f"epoch_{epoch}.pt"
     )
 
 

@@ -8,12 +8,14 @@ from torchvision.transforms import v2
 
 class DetectionDataset(TorchDataset): 
     def __init__(
-            self, 
-            root: Path, 
+            self,
+            root: Path,
             size: tuple[int, int],
+            one_indexed_labels: bool = True,
     ):
-        self.images_dir = root / "images" 
-        self.labels_dir = root / "labels" 
+        self.one_indexed_labels = one_indexed_labels
+        self.images_dir = root / "images"
+        self.labels_dir = root / "labels"
 
 
         if not self.images_dir.exists():
@@ -63,9 +65,12 @@ class DetectionDataset(TorchDataset):
                     if not values:
                         continue
                     class_id, x, y, w, h = map(float, values)
-                    
+
+                    if self.one_indexed_labels:
+                        class_id = class_id - 1
+
                     labels.append([
-                        class_id - 1,
+                        class_id,
                         x,
                         y,
                         w,
@@ -94,17 +99,20 @@ class Dataset:
         size: tuple[int, int] = (640, 640),
         batch_size: int = 8,
         num_workers: int = 0,
+        one_indexed_labels: bool = True,
     ):
         root = Path(root)
 
         train = DetectionDataset(
             root / "train",
             size,
+            one_indexed_labels=one_indexed_labels,
         )
 
         test = DetectionDataset(
             root / "test",
             size,
+            one_indexed_labels=one_indexed_labels,
         )
 
         self.data = {
