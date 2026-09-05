@@ -21,7 +21,9 @@ class TrackFeatureEncoder(nn.Module):
         return self.model(boxes)
 
 
-class TemporalEnsembling(nn.Module):
+class AgeEmbedding(nn.Module):
+    """Learned embedding of age-from-newest (0 = most recent observation)."""
+
     def __init__(self, embed_dim: int, max_len: int = 128):
         super().__init__()
         self.embed = nn.Embedding(max_len, embed_dim)
@@ -67,7 +69,7 @@ class TrackTokenizer(nn.Module):
         self.max_history_len = max_history_len
 
         self.feature_encoder = TrackFeatureEncoder(embed_dim)
-        self.temporal_ensembling = TemporalEnsembling(
+        self.age_embedding = AgeEmbedding(
             embed_dim,
             max_len=max_history_len,
         )
@@ -218,7 +220,7 @@ class TrackTokenizer(nn.Module):
         ages = ages.masked_fill(~valid_mask, 0)
 
         valid_embeds = self.feature_encoder(valid_boxes)
-        valid_embeds = valid_embeds + self.temporal_ensembling(ages)
+        valid_embeds = valid_embeds + self.age_embedding(ages)
 
         packed = pack_padded_sequence(
             valid_embeds,

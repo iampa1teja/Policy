@@ -18,7 +18,7 @@ Contains:
       and inference-time Euler ODE integration. Does not own or define
       the action-expert network; `action_expert` is injected as a
       constructor argument and is expected to be a PiGemmaForCausalLM-based
-      module defined in modelling_RPDPolicy.py, with the call signature:
+      module defined in modeling_RPDPolicy.py, with the call signature:
 
           action_expert(
               noisy_actions: Tensor[B, horizon, action_dim],
@@ -163,7 +163,7 @@ class ConditionalFlowMatching(nn.Module):
         """
         Args:
             action_expert: injected callable module (defined in
-                modelling_RPDPolicy.py), not owned/redefined here.
+                modeling_RPDPolicy.py), not owned/redefined here.
             hidden_size: hidden dim shared by all condition tensors,
                 passed through to ConditionGate.
             num_inference_steps: number of Euler steps at inference.

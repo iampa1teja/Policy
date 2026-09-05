@@ -15,7 +15,7 @@ from lerobot.processor import (
 )
 from lerobot.utils.constants import OBS_PREFIX, OBS_STR
 
-from .configuration_RPDPolicy import RPDPolicyConfig
+from .configuration_RPDPolicy import RPDConfig
 
 OBS_TRACKS = OBS_STR + ".tracks"
 OBS_TRACK_BOXES = OBS_STR + ".track_boxes"
@@ -178,7 +178,7 @@ class TrackTokenizerProcessorStep(ProcessorStep):
         pass
 
 def make_RPDPolicy_pre_post_processors(
-    config: RPDPolicyConfig,
+    config: RPDConfig,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
 ) -> tuple[
     PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],

@@ -10,7 +10,13 @@ import torch.nn as nn
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_STATE
 
-from .configuration_RPDPolicy import RPDPolicyConfig
+from .configuration_RPDPolicy import RPDConfig
+from .processor_RPDPolicy import (
+    OBS_TRACKS,
+    OBS_TRACK_BOXES,
+    OBS_TRACK_FRAME_IDS,
+    OBS_TRACK_HISTORY_MASK,
+)
 
 from ..CNN.core.features import FeatureExtraction
 
@@ -49,7 +55,7 @@ class ActionExpert(nn.Module):
 
     def __init__(
         self,
-        config: RPDPolicyConfig,
+        config: RPDConfig,
         action_dim: int,
         condition_dim: int,
     ):
@@ -147,10 +153,10 @@ class ActionExpert(nn.Module):
 
 
 class RPDPolicy(PreTrainedPolicy):
-    config_class = RPDPolicyConfig
+    config_class = RPDConfig
     name = "RPDPolicy"
 
-    def __init__(self, config: RPDPolicyConfig, dataset_stats: dict[str, Any] = None):
+    def __init__(self, config: RPDConfig, dataset_stats: dict[str, Any] = None):
         super().__init__(config, dataset_stats)
         config.validate_features()
         self.config = config
@@ -303,7 +309,7 @@ class RPDPolicy(PreTrainedPolicy):
 
         if self.config.use_track_tokens:
             track_condition, track_valid_mask = self._track_condition_offline(
-                batch["track_boxes"], batch["track_frame_ids"], batch["track_history_mask"]
+                batch[OBS_TRACK_BOXES], batch[OBS_TRACK_FRAME_IDS], batch[OBS_TRACK_HISTORY_MASK]
             )
             conditions["track"] = (self.config.condition_weights["track"], track_condition)
             masks["track"] = track_valid_mask
@@ -332,7 +338,7 @@ class RPDPolicy(PreTrainedPolicy):
             conditions["image"] = (self.config.condition_weights["image"], self._image_condition(images))
 
         if self.config.use_track_tokens:
-            track_condition, track_valid_mask = self._track_condition_realtime(batch["tracks"])
+            track_condition, track_valid_mask = self._track_condition_realtime(batch[OBS_TRACKS])
             conditions["track"] = (self.config.condition_weights["track"], track_condition)
             masks["track"] = track_valid_mask
 

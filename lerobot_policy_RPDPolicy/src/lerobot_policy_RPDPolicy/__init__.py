@@ -8,4 +8,8 @@ except ImportError:
         "lerobot is not installed. Please install lerobot to use this policy package"
     )
 
-from .configuration_RPDPolicy import RPDPolicyConfig 
+from .configuration_RPDPolicy import RPDConfig
+from .modeling_RPDPolicy import RPDPolicy
+from .processor_RPDPolicy import make_RPDPolicy_pre_post_processors
+
+__all__ = ["RPDConfig", "RPDPolicy", "make_RPDPolicy_pre_post_processors"]

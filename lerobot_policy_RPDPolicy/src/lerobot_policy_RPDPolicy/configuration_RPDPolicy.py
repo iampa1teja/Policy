@@ -24,7 +24,7 @@ class ActionNormalizationMode(str, Enum):
 
 @PreTrainedConfig.register_subclass("RPDPolicy") 
 @dataclass 
-class RPDPolicyConfig(PreTrainedConfig): 
+class RPDConfig(PreTrainedConfig): 
     """
     Configuration class for RPDPolicy 
 
